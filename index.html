@@ -1,0 +1,243 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Xchat</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0b0d10;color:#eee;font-family:system-ui,sans-serif;height:100vh;display:flex}
+aside{width:240px;background:#11151a;padding:18px;border-right:1px solid #222}
+main{flex:1;display:flex;flex-direction:column}
+h1{margin:0 0 18px}.btn,button,input,textarea{background:#191f26;color:white;border:1px solid #303944;border-radius:9px;padding:10px}
+button{cursor:pointer;margin:3px}button:hover{background:#25303a}
+#messages{flex:1;overflow:auto;padding:20px}.msg{background:#151a20;margin:8px 0;padding:12px;border-radius:12px}.meta{font-size:12px;color:#8995a3}
+#composer{display:flex;padding:12px;gap:8px;border-top:1px solid #222}#text{flex:1}
+textarea{width:100%;min-height:110px}
+.hidden{display:none}.section{margin-top:20px}
+</style>
+</head>
+<body>
+
+<aside>
+<h1>Xchat</h1>
+
+<div class="section">
+<input id="username" placeholder="Username" value="User1">
+</div>
+
+<div class="section">
+<button onclick="showLocal()">Local Chat</button>
+<button onclick="showLAN()">LAN Chat</button>
+</div>
+
+<div class="section">
+<button onclick="emailLast()">Email Last Message</button>
+<button onclick="clearChat()">Clear Local Chat</button>
+</div>
+
+<div class="section">
+<b>Mode</b>
+<div id="mode">Local</div>
+</div>
+</aside>
+
+<main>
+<div id="messages"></div>
+
+<div id="lan" class="hidden" style="padding:12px">
+<h3>LAN Pairing</h3>
+<button onclick="makeOffer()">Create Offer</button>
+<button onclick="acceptOffer()">Accept Offer</button>
+<button onclick="acceptAnswer()">Accept Answer</button>
+<textarea id="signal" placeholder="Paste offer/answer here"></textarea>
+<button onclick="copySignal()">Copy</button>
+<div id="lanstatus">Not connected</div>
+</div>
+
+<div id="composer">
+<input id="text" placeholder="Message..." autocomplete="off">
+<button onclick="send()">Send</button>
+</div>
+</main>
+
+<script>
+let mode="local";
+let channel=null;
+let pc=null;
+
+const messages=document.getElementById("messages");
+const text=document.getElementById("text");
+const signal=document.getElementById("signal");
+
+let history=JSON.parse(localStorage.getItem("xchat.messages")||"[]");
+
+function save(){
+ localStorage.setItem("xchat.messages",JSON.stringify(history));
+}
+
+function render(){
+ messages.innerHTML="";
+ history.forEach(m=>{
+  const d=document.createElement("div");
+  d.className="msg";
+  d.innerHTML="<div class='meta'></div><div></div>";
+  d.children[0].textContent=m.user+" • "+m.time;
+  d.children[1].textContent=m.text;
+  messages.appendChild(d);
+ });
+ messages.scrollTop=messages.scrollHeight;
+}
+
+function addMessage(user,msg){
+ history.push({
+  user:user,
+  text:msg,
+  time:new Date().toLocaleTimeString()
+ });
+ save();
+ render();
+}
+
+function send(){
+ const msg=text.value.trim();
+ if(!msg)return;
+
+ const user=document.getElementById("username").value.trim()||"User1";
+ addMessage(user,msg);
+
+ if(mode==="lan" && channel && channel.readyState==="open"){
+   channel.send(JSON.stringify({user:user,text:msg}));
+ }
+
+ text.value="";
+}
+
+text.addEventListener("keydown",e=>{
+ if(e.key==="Enter"){
+  e.preventDefault();
+  send();
+ }
+});
+
+function showLocal(){
+ mode="local";
+ document.getElementById("mode").textContent="Local";
+ document.getElementById("lan").classList.add("hidden");
+}
+
+function showLAN(){
+ mode="lan";
+ document.getElementById("mode").textContent="LAN";
+ document.getElementById("lan").classList.remove("hidden");
+}
+
+function clearChat(){
+ if(confirm("Erase local Xchat history?")){
+   history=[];
+   save();
+   render();
+ }
+}
+
+function emailLast(){
+ if(!history.length)return;
+ const m=history[history.length-1];
+
+ location.href=
+  "mailto:?subject="+encodeURIComponent("Xchat message from "+m.user)+
+  "&body="+encodeURIComponent(m.text);
+}
+
+async function waitICE(){
+ if(pc.iceGatheringState==="complete")return;
+
+ await new Promise(resolve=>{
+  const f=()=>{
+   if(pc.iceGatheringState==="complete"){
+    pc.removeEventListener("icegatheringstatechange",f);
+    resolve();
+   }
+  };
+  pc.addEventListener("icegatheringstatechange",f);
+ });
+}
+
+function setupChannel(ch){
+ channel=ch;
+
+ channel.onopen=()=>{
+  document.getElementById("lanstatus").textContent="LAN connected ✓";
+ };
+
+ channel.onclose=()=>{
+  document.getElementById("lanstatus").textContent="Disconnected";
+ };
+
+ channel.onmessage=e=>{
+  try{
+   const m=JSON.parse(e.data);
+   addMessage(m.user||"LAN User",m.text||e.data);
+  }catch{
+   addMessage("LAN User",e.data);
+  }
+ };
+}
+
+function newPeer(){
+ pc=new RTCPeerConnection({iceServers:[]});
+
+ pc.ondatachannel=e=>{
+  setupChannel(e.channel);
+ };
+
+ return pc;
+}
+
+async function makeOffer(){
+ newPeer();
+ setupChannel(pc.createDataChannel("xchat"));
+
+ const offer=await pc.createOffer();
+ await pc.setLocalDescription(offer);
+ await waitICE();
+
+ signal.value=JSON.stringify(pc.localDescription);
+ document.getElementById("lanstatus").textContent="Send this offer to the other computer";
+}
+
+async function acceptOffer(){
+ try{
+  const offer=JSON.parse(signal.value);
+
+  newPeer();
+  await pc.setRemoteDescription(offer);
+
+  const answer=await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await waitICE();
+
+  signal.value=JSON.stringify(pc.localDescription);
+  document.getElementById("lanstatus").textContent="Send this answer back";
+ }catch(e){
+  alert("Invalid offer: "+e);
+ }
+}
+
+async function acceptAnswer(){
+ try{
+  const answer=JSON.parse(signal.value);
+  await pc.setRemoteDescription(answer);
+  document.getElementById("lanstatus").textContent="Connecting...";
+ }catch(e){
+  alert("Invalid answer: "+e);
+ }
+}
+
+async function copySignal(){
+ await navigator.clipboard.writeText(signal.value);
+}
+
+render();
+</script>
+</body>
+</html>
